@@ -20,7 +20,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-FROM ros:foxy
+FROM ros:jazzy
 
 SHELL ["/bin/bash", "-c"]
 
@@ -30,24 +30,35 @@ RUN apt-get update --fix-missing && \
                        nano \
                        vim \
                        python3-pip \
+                       python3-transforms3d \
                        libeigen3-dev \
                        tmux \
-                       ros-foxy-rviz2
+                       ros-jazzy-rviz2
 RUN apt-get -y dist-upgrade
-RUN pip3 install transforms3d
 
-# f1tenth gym
-RUN git clone https://github.com/f1tenth/f1tenth_gym
-RUN cd f1tenth_gym && \
+# pip: install into the system python that rclpy is built for (PEP 668 blocks
+# this by default, PIP_BREAK_SYSTEM_PACKAGES bypasses the safety lock) and stay on the apt numpy 1.x that ros-jazzy is built against
+RUN echo 'numpy<2' > /etc/pip-constraints.txt
+ENV PIP_BREAK_SYSTEM_PACKAGES=1 \
+    PIP_CONSTRAINT=/etc/pip-constraints.txt
+
+# f1tenth gym: the repo is private, so it is cloned with the GH_TOKEN from .env.
+# .env is mounted as a build secret for this step only, it is not stored in the image
+RUN --mount=type=secret,id=dotenv,required=true \
+    set -a && source /run/secrets/dotenv && set +a && \
+    : "${GH_TOKEN:?is not set in .env}" && \
+    git -c credential.helper='!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f' \
+        clone -b develop https://github.com/ice-lab-racing/gym-environment
+RUN cd gym-environment && \
     pip3 install -e .
 
 # ros2 gym bridge
-RUN mkdir -p sim_ws/src/f1tenth_gym_ros
-COPY . /sim_ws/src/f1tenth_gym_ros
-RUN source /opt/ros/foxy/setup.bash && \
+RUN mkdir -p sim_ws/src/gym-ros_bridge
+COPY . /sim_ws/src/gym-ros_bridge
+RUN source /opt/ros/jazzy/setup.bash && \
     cd sim_ws/ && \
     apt-get update --fix-missing && \
-    rosdep install -i --from-path src --rosdistro foxy -y && \
+    rosdep install -i --from-path src --rosdistro jazzy -y && \
     colcon build
 
 WORKDIR '/sim_ws'

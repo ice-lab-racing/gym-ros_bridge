@@ -23,10 +23,13 @@
 version: '3'
 services:
   sim:
-    image: f1tenth_gym_ros
-    build: ./
+    image: gym-ros_bridge
+    build:
+      context: ./
+      secrets:
+        - dotenv
     volumes: 
-      - .:/sim_ws/src/f1tenth_gym_ros
+      - .:/sim_ws/src/gym-ros_bridge
     environment:
       - DISPLAY=novnc:0.0
     networks:
@@ -44,3 +47,6 @@ services:
       - x11
 networks:
   x11:
+secrets:
+  dotenv:
+    file: ./.env
