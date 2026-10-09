@@ -1,3 +1,117 @@
+# gym-ros_bridge
+
+ROS 2 communication bridge that turns the ICELab F1TENTH gym environment into a ROS 2 simulation.
+
+This repository is the ICELab fork of [f1tenth/f1tenth_gym_ros](https://github.com/f1tenth/f1tenth_gym_ros). The README has two parts:
+
+- **[Part 1 – ICELab fork](#part-1--icelab-fork)**: how to build and run *this* repository. Follow this part.
+- **[Part 2 – Original upstream README](#part-2--original-upstream-readme)**: the unmodified documentation of the original project, kept for reference (topics, configuration, keyboard teleop). Its installation instructions target ROS 2 Foxy and the public `f1tenth_gym` and do **not** apply to this fork.
+
+---
+
+# Part 1 – ICELab fork
+
+## What is different from upstream
+
+| | Upstream | This fork |
+|---|---|---|
+| ROS 2 distro | Foxy (Ubuntu 20.04, Python 3.8) | **Jazzy** (Ubuntu 24.04, Python 3.12) |
+| Simulator | public `f1tenth/f1tenth_gym` | private [`ice-lab-racing/gym-environment`](https://github.com/ice-lab-racing/gym-environment), branch `develop` (needs Python ≥ 3.11) |
+| Path in the container | `/sim_ws/src/f1tenth_gym_ros` | `/sim_ws/src/gym-ros_bridge` |
+| Image / container name | `f1tenth_gym_ros` | `gym-ros_bridge` |
+
+The ROS package name is unchanged: `f1tenth_gym_ros`.
+
+## Prerequisites
+
+- Docker with Docker Compose v2 (`docker compose`, not the legacy `docker-compose`).
+- A GitHub access token that can read `ice-lab-racing/gym-environment` (as of now the repository is private, thus a PAT is needed).
+  add the token in the .env file before building the image
+
+`.env` is listed in `.gitignore` and `.dockerignore`: it is never committed and never copied into the image. 
+During the build it is mounted as a secret for the clone step only.
+
+
+## 1. Build the image
+
+With Docker Compose (recommended):
+```bash
+docker compose build
+```
+
+Or with plain Docker:
+```bash
+docker build --secret id=dotenv,src=.env -t gym-ros_bridge .
+```
+
+The clone of `gym-environment` is cached by Docker. To pick up new commits from `develop`, rebuild with `docker compose build --no-cache sim`.
+
+| Build error | Meaning |
+|---|---|
+| `failed to stat .../.env` / `secret dotenv: not found` | `.env` is missing, or `--secret` was not passed to `docker build` |
+| `GH_TOKEN: is not set in .env` | `.env` has no `GH_TOKEN=` line |
+| `Invalid username or token` | the token is wrong, expired or was regenerated |
+| `Write access to repository not granted` (403) | the token is valid but cannot read `gym-environment`: check resource owner and repository access |
+
+## 2. Start the containers
+
+```bash
+docker compose up -d
+```
+
+This starts two containers:
+
+- `sim`: the bridge image, idle with a `bash` shell. This repository is mounted into it at `/sim_ws/src/gym-ros_bridge`, so edits on the host are visible in the container.
+- `novnc`: a virtual desktop served in the browser, used to display RViz. Open [http://localhost:8080/vnc.html](http://localhost:8080/vnc.html) and click **Connect**.
+
+
+## 3. Open a terminal in the container
+
+```bash
+docker compose exec sim bash
+```
+
+`tmux` is also installed for multiple terminal sessions. 
+The shell starts in `/sim_ws`.
+
+## 4. Source ROS 2 Jazzy and build the workspace
+
+The image already contains a built workspace. Rebuild after changing the code, `config/sim.yaml`, launch files or maps:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+cd /sim_ws
+colcon build
+```
+
+## 5. Launch the simulation
+
+In every new shell, source ROS 2 and the workspace first:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source /sim_ws/install/setup.bash
+ros2 launch f1tenth_gym_ros gym_bridge_launch.py
+```
+
+RViz appears in the noVNC browser tab. To run only the bridge node, without RViz and the map server:
+
+```bash
+ros2 run f1tenth_gym_ros gym_bridge --ros-args -r __node:=bridge --params-file /sim_ws/src/gym-ros_bridge/config/sim.yaml
+```
+
+Keyboard teleop (with `kb_teleop: True` in `config/sim.yaml`), from a second shell:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+ros2 run teleop_twist_keyboard teleop_twist_keyboard
+```
+
+
+# Part 2 – Original upstream README
+
+> Everything below is the documentation of the original [f1tenth/f1tenth_gym_ros](https://github.com/f1tenth/f1tenth_gym_ros). It refers to ROS 2 Foxy, the public `f1tenth_gym` and the path `/sim_ws/src/f1tenth_gym_ros`. For this fork use Part 1 for installation and launching; the sections on topics, configuration and teleop still apply.
+
 # F1TENTH gym environment ROS2 communication bridge
 This is a containerized ROS communication bridge for the F1TENTH gym environment that turns it into a simulation in ROS2.
 
