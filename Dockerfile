@@ -48,7 +48,10 @@ RUN --mount=type=secret,id=dotenv,required=true \
     set -a && source /run/secrets/dotenv && set +a && \
     : "${GH_TOKEN:?is not set in .env}" && \
     git -c credential.helper='!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f' \
-        clone -b develop https://github.com/ice-lab-racing/gym-environment
+        clone -b develop https://github.com/ice-lab-racing/gym-environment && \
+    git -c credential.helper='!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f' \
+        clone https://github.com/ice-lab-racing/car_stack /sim_ws/src/car_stack
+
 RUN cd gym-environment && \
     pip3 install -e .
 
