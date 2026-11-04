@@ -108,7 +108,7 @@ In **single** agent:
 
 `/scan`: The ego agent's laser scan
 
-`/ego_racecar/odom`: The ego agent's odometry
+`/ego_racecar/ground_truth`: The ego agent's exact pose and velocity (frame `map`). Ground truth, for evaluation and debugging only: the real car has no such topic
 
 `/map`: The map of the environment
 
@@ -120,11 +120,11 @@ In addition to the topics available in the single agent scenario, these topics a
 
 `/opp_scan`: The opponent agent's laser scan
 
-`/ego_racecar/opp_odom`: The opponent agent's odometry for the ego agent's planner
+`/ego_racecar/opp_ground_truth`: The opponent agent's ground truth, for the ego agent's planner
 
-`/opp_racecar/odom`: The opponent agents' odometry
+`/opp_racecar/ground_truth`: The opponent agent's ground truth
 
-`/opp_racecar/opp_odom`: The ego agent's odometry for the opponent agent's planner
+`/opp_racecar/opp_ground_truth`: The ego agent's ground truth, for the opponent agent's planner
 
 # Topics subscribed by the simulation
 
@@ -132,7 +132,7 @@ In **single** agent:
 
 `/drive`: The ego agent's drive command via `AckermannDriveStamped` messages
 
-`/initalpose`: This is the topic for resetting the ego's pose via RViz's 2D Pose Estimate tool. Do **NOT** publish directly to this topic unless you know what you're doing.
+`/sim/reset_pose`: This is the topic for resetting (teleporting) the ego's pose via RViz's 2D Pose Estimate tool. Do **NOT** publish directly to this topic unless you know what you're doing. `/initialpose` is left to the localizer
 
 TODO: kb teleop topics
 
@@ -142,7 +142,7 @@ In addition to all topics in the single agent scenario, these topics are also av
 
 `/opp_drive`: The opponent agent's drive command via `AckermannDriveStamped` messages. Note that you'll need to publish to **both** the ego's drive topic and the opponent's drive topic for the cars to move when using 2 agents.
 
-`/goal_pose`: This is the topic for resetting the opponent agent's pose via RViz's 2D Goal Pose tool. Do **NOT** publish directly to this topic unless you know what you're doing.
+`/sim/opp_reset_pose`: This is the topic for resetting the opponent agent's pose via RViz's 2D Goal Pose tool. Do **NOT** publish directly to this topic unless you know what you're doing.
 
 # Keyboard Teleop
 

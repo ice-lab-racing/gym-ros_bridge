@@ -25,17 +25,28 @@ bridge:
     # topics and namespaces
     ego_namespace: 'ego_racecar'
     ego_scan_topic: 'scan'
-    ego_odom_topic: 'odom'
-    ego_opp_odom_topic: 'opp_odom'
+    # ground truth: the simulator's exact pose and velocity (frame map). For evaluation and
+    # debugging only: the real car has no such topic, algorithms must use the estimated pose.
+    ego_gt_topic: 'ground_truth'
+    ego_opp_gt_topic: 'opp_ground_truth'
     ego_drive_topic: 'drive'
     opp_namespace: 'opp_racecar'
     opp_scan_topic: 'opp_scan'
-    opp_odom_topic: 'odom'
-    opp_ego_odom_topic: 'opp_odom'
+    opp_gt_topic: 'ground_truth'
+    opp_ego_gt_topic: 'opp_ground_truth'
     opp_drive_topic: 'opp_drive'
+    # teleport the cars (RViz 2D Pose Estimate / 2D Goal Pose). Not /initialpose: that one is the localizer's
+    ego_reset_topic: '/sim/reset_pose'
+    opp_reset_topic: '/sim/opp_reset_pose'
 
     # transform related
     scan_distance_to_base_link: 0.275
+
+    # localization and odometry
+    # 'ground_truth': map -> odom identity, odom -> base_link = true pose (debugging, reference)
+    # 'odometry':     only odom -> base_link from the odometry; map -> odom comes from the localizer
+    localization: 'ground_truth'
+    odom_frame: 'odom'
     
     # laserscan parameters
     scan_fov: 4.7
