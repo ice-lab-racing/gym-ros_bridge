@@ -106,7 +106,9 @@ The entire directory of the repo is mounted to a workspace `/sim_ws/src` as a pa
 
 In **single** agent:
 
-`/scan`: The ego agent's laser scan
+`/scan`: The ego agent's laser scan, at the real sensor's rate (`scan_rate`, 40 Hz) with its errors: range noise, no return (`inf`) past `scan_range_max` and on a few dropped beams
+
+`/odom`: The ego agent's VESC-style odometry (frame `odom`): integrated from the wheel speed and the steering command, with the sensor's errors, so it drifts like on the real car. Its pose starts at 0 and a teleport does not move it. Errors are set in `sim.yaml` (`sensor_noise: False` turns them off)
 
 `/ego_racecar/ground_truth`: The ego agent's exact pose and velocity (frame `map`). Ground truth, for evaluation and debugging only: the real car has no such topic
 

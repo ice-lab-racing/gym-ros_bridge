@@ -34,6 +34,8 @@ from geometry_msgs.msg import Quaternion
 from ackermann_msgs.msg import AckermannDriveStamped
 from tf2_ros import TransformBroadcaster
 from tf2_ros.static_transform_broadcaster import StaticTransformBroadcaster
+from f1tenth_gym_ros.sensor_model import measured_speed, noisy_scan, odom_step
+
 
 import gym
 import numpy as np
@@ -71,6 +73,19 @@ class GymBridge(Node):
         self.declare_parameter('ego_reset_topic', '/sim/reset_pose')
         self.declare_parameter('opp_reset_topic', '/sim/opp_reset_pose')
 
+        self.declare_parameter('odom_topic', '/odom')
+        self.declare_parameter('odom_rate', 50.0)
+        self.declare_parameter('wheelbase', 0.3302)
+        self.declare_parameter('sensor_noise', True)
+        self.declare_parameter('noise_seed', 0)
+        self.declare_parameter('odom_speed_scale_error', 0.02)
+        self.declare_parameter('odom_speed_noise', 0.02)
+        self.declare_parameter('odom_steer_offset', 0.01)
+        self.declare_parameter('scan_rate', 40.0)
+        self.declare_parameter('scan_range_std', 0.03)
+        self.declare_parameter('scan_range_max', 10.0)
+        self.declare_parameter('scan_dropout', 0.01)
+
         # check num_agents
         num_agents = self.get_parameter('num_agent').value
         if num_agents < 1 or num_agents > 2:
@@ -82,6 +97,18 @@ class GymBridge(Node):
         if self.localization not in ['ground_truth', 'odometry']:
             raise ValueError('localization should be either ground_truth or odometry.')
         self.odom_frame = self.get_parameter('odom_frame').value
+
+        noise = self.get_parameter('sensor_noise').value
+        seed = self.get_parameter('noise_seed').value
+        self.odom_rng = np.random.default_rng(None if seed < 0 else seed)
+        self.scan_rng = np.random.default_rng(None if seed < 0 else seed + 1)
+        self.wheelbase = self.get_parameter('wheelbase').value
+        self.speed_scale_error = self.get_parameter('odom_speed_scale_error').value if noise else 0.0
+        self.speed_noise = self.get_parameter('odom_speed_noise').value if noise else 0.0
+        self.steer_offset = self.get_parameter('odom_steer_offset').value if noise else 0.0
+        self.scan_range_std = self.get_parameter('scan_range_std').value if noise else 0.0
+        self.scan_dropout = self.get_parameter('scan_dropout').value if noise else 0.0
+        self.scan_range_max = self.get_parameter('scan_range_max').value
 
         # env backend
         self.env = gym.make('f110_gym:f110-v0',
@@ -95,7 +122,9 @@ class GymBridge(Node):
         sy = self.get_parameter('sy').value
         stheta = self.get_parameter('stheta').value
         self.ego_pose = [sx, sy, stheta]
-        self.odom_origin = [sx, sy, stheta]
+        self.odom_pose = [0.0, 0.0, 0.0]        # VESC odometry: starts at 0 wherever the car is
+        self.odom_speed = 0.0
+        self.odom_yaw_rate = 0.0
         self.ego_speed = [0.0, 0.0, 0.0]
         self.ego_requested_speed = 0.0
         self.ego_steer = 0.0
@@ -138,9 +167,14 @@ class GymBridge(Node):
             self.ego_scan = list(self.obs['scans'][0])
 
         # sim physical step timer
-        self.drive_timer = self.create_timer(0.01, self.drive_timer_callback)
-        # topic publishing timer
+        self.sim_dt = 0.01
+        self.drive_timer = self.create_timer(self.sim_dt, self.drive_timer_callback)
+        # topic publishing timer (tf, ground truth)
         self.timer = self.create_timer(0.004, self.timer_callback)
+        # sensors at their real rates
+        self.scan_timer = self.create_timer(1.0 / self.get_parameter('scan_rate').value, self.scan_timer_callback)
+        self.odom_timer = self.create_timer(1.0 / self.get_parameter('odom_rate').value, self.odom_timer_callback)
+
 
         # transform broadcaster
         self.br = TransformBroadcaster(self)
@@ -157,6 +191,7 @@ class GymBridge(Node):
         # publishers
         self.ego_scan_pub = self.create_publisher(LaserScan, ego_scan_topic, 10)
         self.ego_gt_pub = self.create_publisher(Odometry, ego_gt_topic, 10)
+        self.odom_pub = self.create_publisher(Odometry, self.get_parameter('odom_topic').value, 10)
         self.ego_drive_published = False
         if num_agents == 2:
             self.opp_scan_pub = self.create_publisher(LaserScan, opp_scan_topic, 10)
@@ -247,16 +282,43 @@ class GymBridge(Node):
             self.ego_steer = 0.0
 
     def drive_timer_callback(self):
+        stepped = False
         if self.ego_drive_published and not self.has_opp:
             self.obs, _, self.done, _ = self.env.step(np.array([[self.ego_steer, self.ego_requested_speed]]))
+            stepped = True
         elif self.ego_drive_published and self.has_opp and self.opp_drive_published:
             self.obs, _, self.done, _ = self.env.step(np.array([[self.ego_steer, self.ego_requested_speed], [self.opp_steer, self.opp_requested_speed]]))
+            stepped = True
         self._update_sim_state()
+        if stepped:
+            self._update_odometry()
 
-    def timer_callback(self):
+    def _update_odometry(self):
+        """One sim step of VESC odometry, from what the VESC can measure: wheel speed and servo command."""
+        steer = np.clip(self.ego_steer, -0.4189, 0.4189) + self.steer_offset    # gym's s_max, the servo limit
+        self.odom_speed = measured_speed(self.ego_speed[0], self.odom_rng, self.speed_scale_error, self.speed_noise)
+        self.odom_pose, self.odom_yaw_rate = odom_step(self.odom_pose, self.odom_speed, steer, self.sim_dt, self.wheelbase)
+
+    def odom_timer_callback(self):
+        """VESC odometry, as vesc_to_odom publishes it on the car."""
+        odom = Odometry()
+        odom.header.stamp = self.get_clock().now().to_msg()
+        odom.header.frame_id = self.odom_frame
+        odom.child_frame_id = self.ego_namespace + '/base_link'
+        odom.pose.pose.position.x = self.odom_pose[0]
+        odom.pose.pose.position.y = self.odom_pose[1]
+        quat = euler.euler2quat(0., 0., self.odom_pose[2], axes='sxyz')
+        odom.pose.pose.orientation.x = quat[1]
+        odom.pose.pose.orientation.y = quat[2]
+        odom.pose.pose.orientation.z = quat[3]
+        odom.pose.pose.orientation.w = quat[0]
+        odom.twist.twist.linear.x = self.odom_speed
+        odom.twist.twist.angular.z = self.odom_yaw_rate
+        self.odom_pub.publish(odom)
+
+    def scan_timer_callback(self):
         ts = self.get_clock().now().to_msg()
 
-        # pub scans
         scan = LaserScan()
         scan.header.stamp = ts
         scan.header.frame_id = self.ego_namespace + '/laser'
@@ -264,8 +326,9 @@ class GymBridge(Node):
         scan.angle_max = self.angle_max
         scan.angle_increment = self.angle_inc
         scan.range_min = 0.
-        scan.range_max = 30.
-        scan.ranges = self.ego_scan
+        scan.range_max = self.scan_range_max
+        scan.ranges = noisy_scan(self.ego_scan, self.scan_rng, self.scan_range_std,
+                                 self.scan_range_max, self.scan_dropout).tolist()
         self.ego_scan_pub.publish(scan)
 
         if self.has_opp:
@@ -276,9 +339,13 @@ class GymBridge(Node):
             opp_scan.angle_max = self.angle_max
             opp_scan.angle_increment = self.angle_inc
             opp_scan.range_min = 0.
-            opp_scan.range_max = 30.
-            opp_scan.ranges = self.opp_scan
+            opp_scan.range_max = self.scan_range_max
+            opp_scan.ranges = noisy_scan(self.opp_scan, self.scan_rng, self.scan_range_std,
+                                         self.scan_range_max, self.scan_dropout).tolist()
             self.opp_scan_pub.publish(opp_scan)
+
+    def timer_callback(self):
+        ts = self.get_clock().now().to_msg()
 
         # pub tf
         self._publish_ground_truth(ts)
@@ -383,13 +450,7 @@ class GymBridge(Node):
         """Pose of base_link in the odom frame."""
         if self.localization == 'ground_truth':
             return self.ego_pose                    # map == odom
-        # odometry: for now the true pose seen from the start (perfect odometry starting at 0,0,0).
-        # Phase 1 replaces this with the VESC-style dead reckoning (noise, drift).
-        sx, sy, s0 = self.odom_origin
-        dx, dy = self.ego_pose[0] - sx, self.ego_pose[1] - sy
-        c, s = np.cos(s0), np.sin(s0)
-        theta = np.arctan2(np.sin(self.ego_pose[2] - s0), np.cos(self.ego_pose[2] - s0))
-        return [c * dx + s * dy, -s * dx + c * dy, theta]
+        return self.odom_pose                       # VESC dead reckoning: drifts, the localizer corrects it
 
 
     def _publish_wheel_transforms(self, ts):

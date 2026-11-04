@@ -47,6 +47,20 @@ bridge:
     # 'odometry':     only odom -> base_link from the odometry; map -> odom comes from the localizer
     localization: 'ground_truth'
     odom_frame: 'odom'
+    odom_topic: '/odom'              # VESC-style odometry, same name as on the car
+    odom_rate: 50.0                  # Hz
+    wheelbase: 0.3302                # m, lf + lr of the gym's car
+
+    # sensor errors: placeholders until measured on the car
+    sensor_noise: True               # False: same rates and range_max, no errors
+    noise_seed: 0                    # -1: different noise every run
+    odom_speed_scale_error: 0.02     # ERPM gain off by 2%
+    odom_speed_noise: 0.02           # std of the measured speed, relative to the speed
+    odom_steer_offset: 0.01          # rad, servo trim error
+    scan_rate: 40.0                  # Hz (Hokuyo UST-10LX)
+    scan_range_std: 0.03             # m, total (the gym already adds 0.01)
+    scan_range_max: 10.0             # m, no return beyond
+    scan_dropout: 0.01               # fraction of beams with no return
     
     # laserscan parameters
     scan_fov: 4.7
