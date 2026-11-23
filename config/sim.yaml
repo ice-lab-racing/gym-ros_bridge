@@ -38,6 +38,11 @@ bridge:
     # teleport the cars (RViz 2D Pose Estimate / 2D Goal Pose). Not /initialpose: that one is the localizer's
     ego_reset_topic: '/sim/reset_pose'
     opp_reset_topic: '/sim/opp_reset_pose'
+    # after a teleport (reset, 2D Pose Estimate) the ego's new pose goes here, for the localizer; '' off
+    localizer_reset_topic: '/initialpose'
+    # the gym ends the episode after 2 laps: True puts the car back at the start, False keeps it driving
+    # (collisions and rollovers always reset)
+    reset_on_laps: True
 
     # transform related
     scan_distance_to_base_link: 0.275

@@ -207,6 +207,8 @@ ros2 run teleop_twist_keyboard teleop_twist_keyboard
 ## Simulation behaviour
 
 - When an episode terminates (ego collision, ego rollover, or all cars completing two laps) the simulation resets automatically: every car goes back to its starting pose from `config/sim.yaml` and stands still until the next drive command. A node that keeps publishing drive commands starts moving again immediately.
+- `reset_on_laps: False` keeps the cars driving after two laps: the bridge clears the gym's lap counter instead of resetting. Collisions and rollovers still reset.
+- After the ego is teleported (a reset, or `/sim/reset_pose`) the bridge publishes its new pose on `localizer_reset_topic` (`/initialpose`, as RViz's 2D Pose Estimate does on the car), so a localizer starts again from there. `''` turns it off.
 - An opponent collision does not end the episode.
 
 ## Topics
@@ -216,6 +218,7 @@ Published by the simulation, single agent:
 - `/scan`: the ego agent's laser scan, at the real sensor's rate (`scan_rate`, 40 Hz) with its errors: range noise, no return (`inf`) past `scan_range_max` and on a few dropped beams.
 - `/odom`: the ego agent's VESC-style odometry (frame `odom`): integrated from the wheel speed and the steering command, with the sensor's errors, so it drifts like on the real car. Its pose starts at 0 and a teleport does not move it. Errors are set in `config/sim.yaml` (`sensor_noise: False` turns them off).
 - `/ego_racecar/ground_truth`: the ego agent's exact pose and velocity (frame `map`). Ground truth, for evaluation and debugging only: the real car has no such topic.
+- Ground truth (once per sim step, 100 Hz), `/odom` and `/scan` are stamped with the time of the sim step they come from, not the time they are published: their pose is exactly where the car was at their stamp.
 - `/map`, `/tf`, `/tf_static`. With `localization: 'ground_truth'` the bridge publishes `map -> odom` as identity and `odom -> base_link` as the true pose; with `localization: 'odometry'` it publishes only `odom -> base_link` from the odometry, and `map -> odom` must come from the localizer.
 
 With two agents (`num_agent: 2`), also:
@@ -228,7 +231,7 @@ With two agents (`num_agent: 2`), also:
 Subscribed by the simulation:
 
 - `/drive` (and `/opp_drive` with two agents): drive commands as `AckermannDriveStamped`.
-- `/sim/reset_pose`: resets (teleports) the ego's pose, from RViz's 2D Pose Estimate tool. `/initialpose` is left to the localizer.
+- `/sim/reset_pose`: resets (teleports) the ego's pose, from RViz's 2D Pose Estimate tool. `/initialpose` is left to the localizer: the bridge publishes the ego's new pose there after every teleport (`localizer_reset_topic`).
 - `/sim/opp_reset_pose`: resets the opponent's pose, from RViz's 2D Goal Pose tool.
 - `/cmd_vel`: keyboard teleop, with `kb_teleop: True`.
 

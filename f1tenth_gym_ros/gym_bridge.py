@@ -74,6 +74,9 @@ class GymBridge(Node):
             ('odom_frame', 'odom'),
             ('ego_reset_topic', '/sim/reset_pose'),
             ('opp_reset_topic', '/sim/opp_reset_pose'),
+            ('localizer_reset_topic', '/initialpose'),
+            # episode end
+            ('reset_on_laps', True),
             ('odom_topic', '/odom'),
             ('odom_rate', 50.0),
             ('wheelbase', 0.3302),
@@ -97,6 +100,7 @@ class GymBridge(Node):
             raise ValueError('num_agents should be an int.')
 
         self.localization = self.get_parameter('localization').value
+        self.reset_on_laps = self.get_parameter('reset_on_laps').value
         if self.localization not in ['ground_truth', 'odometry']:
             raise ValueError('localization should be either ground_truth or odometry.')
         self.odom_frame = self.get_parameter('odom_frame').value
@@ -182,6 +186,12 @@ class GymBridge(Node):
         self.scan_timer = self.create_timer(1.0 / self.get_parameter('scan_rate').value, self.scan_timer_callback)
         self.odom_timer = self.create_timer(1.0 / self.get_parameter('odom_rate').value, self.odom_timer_callback)
 
+        # When the sim state was computed: the stamp of the messages about it (ground truth, /odom, /scan).
+        # Stamped when published instead, they would be up to a sim step (10 ms) old at their stamp, by a
+        # varying amount: at speed the pose would jitter by up to 0.17 m against its stamp.
+        self.state_stamp = self.get_clock().now()
+        self.last_stamps = {}
+
         # transform broadcaster
         self.br = TransformBroadcaster(self)
 
@@ -198,6 +208,10 @@ class GymBridge(Node):
         self.ego_scan_pub = self.create_publisher(LaserScan, ego_scan_topic, 10)
         self.ego_gt_pub = self.create_publisher(Odometry, ego_gt_topic, 10)
         self.odom_pub = self.create_publisher(Odometry, self.get_parameter('odom_topic').value, 10)
+        # where the ego car is after a teleport, for the localizer (sim only: on the car, RViz's 2D Pose Estimate)
+        localizer_reset_topic = self.get_parameter('localizer_reset_topic').value
+        self.localizer_reset_pub = self.create_publisher(PoseWithCovarianceStamped, localizer_reset_topic, 10) \
+            if localizer_reset_topic else None
         self.ego_drive_published = False
         if num_agents == 2:
             self.opp_scan_pub = self.create_publisher(LaserScan, opp_scan_topic, 10)
@@ -236,6 +250,12 @@ class GymBridge(Node):
                 self.teleop_callback,
                 10)
 
+        # Log now, before the sim runs: rclpy's first log call in a process takes ~30 ms (it looks up the
+        # caller's module among all the loaded ones), and in the middle of a run the sim would miss 3 steps.
+        self.get_logger().info(
+            f"map {self.get_parameter('map_path').value}, localization {self.localization}, "
+            f"reset after 2 laps: {'yes' if self.reset_on_laps else 'no'}")
+
 
     def drive_callback(self, drive_msg):
         self.ego_requested_speed = drive_msg.drive.speed
@@ -259,6 +279,7 @@ class GymBridge(Node):
             self._reset([[rx, ry, rtheta], list(self.opp_pose)])
         else:
             self._reset([[rx, ry, rtheta]])
+        self._reset_localizer()
 
     def opp_reset_callback(self, pose_msg):
         if self.has_opp:
@@ -293,8 +314,24 @@ class GymBridge(Node):
             self._step(np.array([[self.ego_steer, self.ego_requested_speed], [self.opp_steer, self.opp_requested_speed]]))
             stepped = True
         self._update_sim_state()
+        self.state_stamp = self.get_clock().now()
         if stepped:
             self._update_odometry()
+
+    def _measurement_stamp(self, topic, idle=0.1):
+        """The stamp for a message about the latest sim state: the time it was computed, once per state.
+        Without a new state (the sim stalled) the same data again only after `idle` s, stamped now.
+        None: nothing new to publish."""
+        last = self.last_stamps.get(topic)
+        if last is None or self.state_stamp > last:
+            stamp = self.state_stamp
+        else:
+            now = self.get_clock().now()
+            if (now - last).nanoseconds < idle * 1e9:
+                return None
+            stamp = now
+        self.last_stamps[topic] = stamp
+        return stamp.to_msg()
 
     def _update_odometry(self):
         """One sim step of VESC odometry, from what the VESC can measure: wheel speed and servo command."""
@@ -304,8 +341,11 @@ class GymBridge(Node):
 
     def odom_timer_callback(self):
         """VESC odometry, as vesc_to_odom publishes it on the car."""
+        stamp = self._measurement_stamp('odom')
+        if stamp is None:
+            return
         odom = Odometry()
-        odom.header.stamp = self.get_clock().now().to_msg()
+        odom.header.stamp = stamp
         odom.header.frame_id = self.odom_frame
         odom.child_frame_id = self.ego_namespace + '/base_link'
         odom.pose.pose.position.x = self.odom_pose[0]
@@ -330,6 +370,13 @@ class GymBridge(Node):
                 reason = 'laps completed'
             else:
                 reason = 'time limit reached'
+            if reason == 'laps completed' and not self.reset_on_laps:
+                # Keep driving: clear the gym's lap counters (the episode ends when they reach 2 laps)
+                # instead of moving the car back to the start. Not logged as 'laps completed', which
+                # means a reset to the telemetry recorder.
+                self.env.unwrapped.toggle_list[:] = 0
+                self.get_logger().info('2 laps done, the car keeps going (reset_on_laps false)', once=True)
+                return
             self.get_logger().info(reason + ', resetting to the starting poses', throttle_duration_sec=1.0)
             # stop the cars, they move again with the next drive command
             self.ego_requested_speed = 0.0
@@ -338,13 +385,33 @@ class GymBridge(Node):
                 self.opp_requested_speed = 0.0
                 self.opp_steer = 0.0
             self._reset(self.start_poses)
+            self._reset_localizer()
 
     def _reset(self, poses):
         self.obs, _ = self.env.reset(options={'poses': np.array(poses)})
         self._update_sim_state()
 
+    def _reset_localizer(self):
+        """The ego car was teleported: give the localizer its new pose, as one would with RViz's 2D Pose
+        Estimate after putting the real car down somewhere else. Otherwise it keeps the car where it was."""
+        if self.localizer_reset_pub is None:
+            return
+        msg = PoseWithCovarianceStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = 'map'
+        msg.pose.pose.position.x = self.ego_pose[0]
+        msg.pose.pose.position.y = self.ego_pose[1]
+        quat = euler.euler2quat(0., 0., self.ego_pose[2], axes='sxyz')
+        msg.pose.pose.orientation.x = quat[1]
+        msg.pose.pose.orientation.y = quat[2]
+        msg.pose.pose.orientation.z = quat[3]
+        msg.pose.pose.orientation.w = quat[0]
+        self.localizer_reset_pub.publish(msg)
+
     def scan_timer_callback(self):
-        ts = self.get_clock().now().to_msg()
+        ts = self._measurement_stamp('scan')
+        if ts is None:
+            return
 
         scan = LaserScan()
         scan.header.stamp = ts
@@ -374,8 +441,11 @@ class GymBridge(Node):
     def timer_callback(self):
         ts = self.get_clock().now().to_msg()
 
+        # ground truth: once per sim step (this timer is faster), stamped with the step's time
+        gt_stamp = self._measurement_stamp('ground_truth')
+        if gt_stamp is not None:
+            self._publish_ground_truth(gt_stamp)
         # pub tf
-        self._publish_ground_truth(ts)
         self._publish_transforms(ts)
         self._publish_laser_transforms(ts)
         self._publish_wheel_transforms(ts)
